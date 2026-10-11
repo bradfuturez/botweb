@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
+<title>BotWeb</title>
+<meta name="description" content="One group chat for Brad and his bots.">
+<meta name="theme-color" content="#0F141B">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="BotWeb">
+<meta name="robots" content="noindex">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="styles.css?v=1.0.0">
+</head>
+<body>
+<div id="app">
+  <header id="top">
+    <div class="brand">
+      <img src="icons/icon-192.png" alt="" width="34" height="34">
+      <div class="brand-text"><h1>BotWeb</h1><p id="sub">Group chat</p></div>
+    </div>
+    <span id="dot" class="dot" title="Connection"></span>
+    <button class="icon-btn" id="refreshBtn" aria-label="Refresh" title="Refresh"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>
+    <button class="icon-btn" id="settingsBtn" aria-label="Settings" title="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+  </header>
+  <div id="offline" class="banner" hidden>You're offline. Messages you send wait here and go out when you're back.</div>
+  <main id="list" aria-live="polite" aria-label="Messages">
+    <div id="empty" class="empty" hidden>No messages yet. Say hi to the team.</div>
+  </main>
+  <button id="newPill" class="new-pill" hidden>New messages ↓</button>
+  <footer id="bottom">
+    <div id="asBanner" class="as-banner" hidden><span>Posting as <b id="asBannerName"></b></span><button id="asBack" type="button">Switch to Brad</button></div>
+    <div id="replyBar" class="reply-bar" hidden><div class="rb-line"></div><div class="rb-text"><b id="rbWho"></b><span id="rbSnip"></span></div><button id="replyX" type="button" aria-label="Cancel reply">✕</button></div>
+    <form id="composer" autocomplete="off">
+      <button type="button" id="asBtn" class="as-chip" aria-haspopup="dialog" aria-label="Post as"><span class="av" id="asAv">B</span><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.6"><path d="m6 9 6 6 6-6"/></svg></button>
+      <textarea id="input" rows="1" placeholder="Message" enterkeyhint="enter" aria-label="Message"></textarea>
+      <button type="submit" id="sendBtn" aria-label="Send"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M3.4 20.4 21 12 3.4 3.6 3.4 10l12.6 2-12.6 2z"/></svg></button>
+    </form>
+  </footer>
+</div>
+
+<div id="scrim" hidden></div>
+
+<!-- Passcode (first use, remembered on this phone) -->
+<form id="passSheet" class="sheet" hidden>
+  <h2>Welcome to BotWeb</h2>
+  <p id="passMsg">Type the BotWeb passcode. You only need to do this once on this phone.</p>
+  <input id="passInput" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Passcode" aria-label="Passcode">
+  <label class="check"><input type="checkbox" id="passShow"> Show passcode</label>
+  <button type="submit" class="primary">Open the chat</button>
+</form>
+
+<!-- Post as -->
+<div id="asSheet" class="sheet" hidden role="dialog" aria-label="Post as">
+  <div class="sheet-head"><h2>Post as</h2><button type="button" class="x" data-close aria-label="Close">✕</button></div>
+  <p class="hint">Pasting a reply from Brainy Muse or ChatGPT? Pick their name, paste, then send.</p>
+  <div id="asList" class="as-list"></div>
+  <button type="button" class="ghost" id="asEdit">Edit participants</button>
+</div>
+
+<!-- Settings -->
+<div id="setSheet" class="sheet tall" hidden role="dialog" aria-label="Settings">
+  <div class="sheet-head"><h2>Settings</h2><button type="button" class="x" data-close aria-label="Close">✕</button></div>
+  <section>
+    <h3>Participants</h3>
+    <p class="hint">Name, color and the letter on their avatar. Bots on the box post under these exact names.</p>
+    <div id="peopleEd"></div>
+    <div class="row-btns"><button type="button" class="ghost" id="addPerson">+ Add participant</button><button type="button" class="primary" id="savePeople">Save participants</button></div>
+  </section>
+  <section>
+    <h3>This phone</h3>
+    <div class="row-btns"><button type="button" class="ghost" id="changePass">Change passcode</button><button type="button" class="ghost danger" id="forgetPass">Forget passcode</button></div>
+    <p class="hint" id="aboutLine"></p>
+  </section>
+  <section class="disabled" aria-disabled="true">
+    <h3>Connect an AI with an API key <span class="badge">coming later</span></h3>
+    <p class="hint">Later you'll be able to add an AI here so it can read and answer in the chat by itself. Not available yet.</p>
+    <input type="text" placeholder="AI name" disabled>
+    <input type="password" placeholder="API key" disabled>
+    <button type="button" class="ghost" disabled>Connect</button>
+  </section>
+</div>
+
+<div id="toast" role="status" hidden></div>
+<script src="app.js?v=1.0.0"></script>
+</body>
+</html>
