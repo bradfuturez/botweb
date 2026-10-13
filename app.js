@@ -1,7 +1,7 @@
 /* BotWeb: one group chat for Brad and his bots. Talks to the botweb-relay (the relay holds the GitHub access;
    this public app only knows a passcode, typed once and kept on this phone). No chat content lives in this repo. */
 'use strict';
-const VERSION = '1.1.1';
+const VERSION = '1.2.0';
 const RELAY = (window.BOTWEB_RELAY || 'https://botweb-relay.vercel.app/api/');
 const TZ = 'America/New_York', POLL_MS = 4000;
 const K = { pass: 'bw.passcode', as: 'bw.postAs', draft: 'bw.draft', cache: 'bw.cache', people: 'bw.people', outbox: 'bw.outbox', reply: 'bw.reply', signed: 'bw.signed' };
@@ -219,7 +219,7 @@ async function loadPeople() {
 }
 
 /* ---------- sending (outbox survives going offline / closing the app) ---------- */
-let picked = [], uploading = false; // [{file, kind, url (preview object URL)}]
+let picked = [], uploading = false, keepOriginal = false; // [{file, kind, url (preview object URL)}]
 async function send(text) {
   text = text.trim(); if ((!text && !picked.length) || uploading) return;
   let attachments;
@@ -374,11 +374,16 @@ function addFiles(list) {
   }
   renderTray(); updateSend();
 }
-function clearPicked() { picked.forEach(p => URL.revokeObjectURL(p.url)); picked = []; renderTray(); updateSend(); }
+function clearPicked() { picked.forEach(p => URL.revokeObjectURL(p.url)); picked = []; keepOriginal = false; renderTray(); updateSend(); }
 function renderTray() {
   $('#tray').hidden = !picked.length;
   $('#trayItems').innerHTML = picked.map((p, i) => `<div class="tray-item">${p.kind === 'video' ? `<video src="${p.url}#t=0.1" muted playsinline preload="metadata"></video><span class="vbadge">▶ ${fmtMB(p.file.size)}</span>` : `<img src="${p.url}" alt="">`}<button type="button" class="rm" data-rm="${i}" aria-label="Remove">✕</button></div>`).join('');
+  const vids = picked.filter(p => p.kind === 'video');
+  $('#origRow').hidden = !vids.length;
+  $('#origChk').checked = keepOriginal;
+  $('#origHint').textContent = keepOriginal ? 'Sends the full file (slower)' : 'Videos are shrunk to 720p first (faster)';
 }
+$('#origChk').addEventListener('change', e => { keepOriginal = e.target.checked; renderTray(); });
 $('#attachBtn').addEventListener('click', () => { if (!uploading) $('#fileInput').click(); });
 $('#fileInput').addEventListener('change', e => { addFiles([...e.target.files]); e.target.value = ''; });
 $('#trayItems').addEventListener('click', e => { const b = e.target.closest('[data-rm]'); if (!b || uploading) return; const [p] = picked.splice(+b.dataset.rm, 1); URL.revokeObjectURL(p.url); renderTray(); updateSend(); });
@@ -431,27 +436,81 @@ async function blobUpload(it, onProgress) {
     throw new RelayError('server', 'Upload failed: ' + String(e && e.message || e).replace(/^Vercel Blob: /, '').slice(0, 160));
   }
 }
+/* Video shrinking: WebCodecs (hardware encoder on Android Chrome) via the vendored Mediabunny library. It reads the file
+   in slices and encodes frame by frame, so long clips don't fill memory; output goes to a temp file in the browser's
+   private storage (OPFS) when available. Skipped for small/low-res clips; any failure means the original is sent. */
+const SHRINK_MIN_BYTES = 15 * 1048576, SHRINK_LONG = 1280, SHRINK_VBR = 2_300_000, SHRINK_ABR = 128_000;
+let mbLib = null;
+async function shrinkVideo(file, onPct) {
+  if (file.size < SHRINK_MIN_BYTES || typeof VideoEncoder === 'undefined' || typeof VideoDecoder === 'undefined') return null;
+  let input, conv, opfsName, dir;
+  try {
+    mbLib = mbLib || await import('./vendor/mediabunny-1.61.4.js');
+    const M = mbLib;
+    input = new M.Input({ source: new M.BlobSource(file), formats: M.ALL_FORMATS });
+    const vt = await input.getPrimaryVideoTrack(); if (!vt) return null;
+    const W = vt.displayWidth, H = vt.displayHeight, long = Math.max(W, H);
+    if (long <= SHRINK_LONG) return null; // already 720p or smaller
+    const sc = SHRINK_LONG / long, even = n => Math.max(2, Math.round(n / 2) * 2), w = even(W * sc), h = even(H * sc);
+    if (!(await M.canEncodeVideo('avc', { width: w, height: h, bitrate: SHRINK_VBR }))) return null;
+    const dur = await input.computeDuration().catch(() => 0);
+    // write to OPFS when we can (keeps RAM flat on long clips), else to memory with the index up front
+    let target, fileHandle;
+    try {
+      dir = await navigator.storage.getDirectory(); opfsName = 'bw-shrink-' + rndHex(6) + '.mp4';
+      fileHandle = await dir.getFileHandle(opfsName, { create: true });
+      target = new M.StreamTarget(await fileHandle.createWritable(), { chunked: true });
+    } catch (_) { fileHandle = null; opfsName = null; target = new M.BufferTarget(); }
+    const output = new M.Output({ format: new M.Mp4OutputFormat({ fastStart: fileHandle ? false : 'in-memory' }), target });
+    conv = await M.Conversion.init({ input, output, showWarnings: false,
+      video: { width: w, height: h, fit: 'contain', codec: 'avc', bitrate: SHRINK_VBR },
+      audio: async t => t.codec === 'aac' ? {} : (await M.canEncodeAudio('aac')) ? { codec: 'aac', bitrate: SHRINK_ABR } : { codec: 'opus', bitrate: SHRINK_ABR } });
+    if (!conv.isValid || conv.discardedTracks.length) {
+      if (conv.discardedTracks.length) console.warn('shrink: would lose a track', conv.discardedTracks.map(d => d.reason)); return null;
+    }
+    conv.onProgress = f => onPct(Math.min(0.99, f));
+    await conv.execute();
+    const out = fileHandle ? await fileHandle.getFile() : new Blob([target.buffer], { type: 'video/mp4' });
+    onPct(1);
+    if (!out.size || out.size > file.size * 0.8) return null; // not worth it
+    return { blob: out, w, h, dur: dur || undefined, _opfs: opfsName };
+  } catch (e) { console.warn('shrink failed, sending original', e); try { conv && await conv.cancel(); } catch (_) {} return null; }
+  finally { try { input && input.dispose && input.dispose(); } catch (_) {} }
+}
+async function dropTemp(items) { try { const dir = await navigator.storage.getDirectory(); for (const i of items) if (i._opfs) await dir.removeEntry(i._opfs).catch(() => {}); } catch (_) {} }
 async function uploadAll() {
   uploading = true; updateSend(); $('#tray').classList.add('busy'); $('#upBar').hidden = false;
+  const items = [];
   const bar = (f, t) => { $('#upFill').style.width = Math.round(f * 100) + '%'; $('#upText').textContent = t; };
   try {
     bar(0, 'Preparing…');
-    const items = [];
     for (const p of picked) {
       if (p.kind === 'image') items.push({ ...(await prepImage(p.file)), kind: 'image' });
-      else items.push({ blob: p.file, name: p.file.name || 'video.mp4', type: p.file.type || (/\.mov$/i.test(p.file.name) ? 'video/quicktime' : 'video/mp4'), kind: 'video', ...(await videoInfo(p.url)) });
+      else {
+        const it = { blob: p.file, name: p.file.name || 'video.mp4', type: p.file.type || (/\.mov$/i.test(p.file.name) ? 'video/quicktime' : 'video/mp4'), kind: 'video', orig: p.file.size };
+        if (!keepOriginal) {
+          const n = picked.filter(q => q.kind === 'video').length, k = items.filter(q => q.kind === 'video').length + 1;
+          const sh = await shrinkVideo(p.file, f => bar(f, `Shrinking video${n > 1 ? ` ${k} of ${n}` : ''}… ${Math.round(f * 100)}%`));
+          if (sh) Object.assign(it, sh, { name: it.name.replace(/\.[^.]+$/, '') + '.mp4', type: 'video/mp4' });
+        }
+        if (!it.w) Object.assign(it, await videoInfo(p.url));
+        items.push(it);
+      }
     }
     const total = items.reduce((n, i) => n + i.blob.size, 0) || 1; let doneBytes = 0; const out = [];
+    const shrunk = items.filter(i => i.orig && i.blob.size < i.orig), was = shrunk.reduce((n, i) => n + i.orig, 0), now = shrunk.reduce((n, i) => n + i.blob.size, 0);
+    const sizeNote = shrunk.length ? ` · video ${fmtMB(was)} → ${fmtMB(now)}` : '';
     for (const [i, it] of items.entries()) {
       const label = items.length > 1 ? `Uploading ${i + 1} of ${items.length}` : 'Uploading';
       bar(doneBytes / total, `${label}… ${Math.round(doneBytes / total * 100)}%`);
-      const r = await blobUpload(it, n => { const f = (doneBytes + n) / total; bar(f, `${label}… ${Math.round(f * 100)}% · ${fmtMB(doneBytes + n)} of ${fmtMB(total)}`); });
+      const r = await blobUpload(it, n => { const f = (doneBytes + n) / total; bar(f, `${label}… ${Math.round(f * 100)}% · ${fmtMB(doneBytes + n)} of ${fmtMB(total)}${sizeNote}`); });
       doneBytes += it.blob.size;
       out.push({ name: it.name, url: r.url, mime: it.type, size: it.blob.size, w: it.w, h: it.h, dur: it.dur });
     }
     bar(1, 'Sent');
+    if (shrunk.length) toast(`Video shrunk from ${fmtMB(was)} to ${fmtMB(now)}`, 4000);
     return out;
-  } finally { uploading = false; updateSend(); $('#tray').classList.remove('busy'); $('#upBar').hidden = true; }
+  } finally { uploading = false; updateSend(); $('#tray').classList.remove('busy'); $('#upBar').hidden = true; dropTemp(items); }
 }
 
 /* ---------- composer (draft is kept on the phone, even offline) ---------- */

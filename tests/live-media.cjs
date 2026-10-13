@@ -24,12 +24,19 @@ const TYPES = { html: 'text/html', js: 'text/javascript', css: 'text/css', webma
   await page.waitForSelector('.msg', { timeout: 20000 }).catch(() => {});
   await page.setInputFiles('#fileInput', [IMG, VID]);
   ok(await page.locator('.tray-item').count() === 2, 'preview tray shows 2 picked files');
+  ok(await page.locator('#origRow:not([hidden])').count() === 1, 'Original quality toggle shown for videos');
   await page.screenshot({ path: OUT + '/1-preview.png' });
   await page.fill('#input', '[test] media upload check, will be deleted');
   await page.click('#sendBtn');
   let sawBar = false;
   for (let i = 0; i < 100 && !sawBar; i++) { sawBar = await page.locator('#upBar:not([hidden])').count() > 0; if (!sawBar) await page.waitForTimeout(50); }
   ok(sawBar, 'progress bar shown while uploading');
+  if (process.env.EXPECT_SHRINK) {
+    let st = ''; for (let i = 0; i < 300 && !/Shrinking video/.test(st); i++) { st = await page.locator('#upText').textContent().catch(() => ''); if (!/Shrinking/.test(st)) await page.waitForTimeout(100); }
+    ok(/Shrinking video… \d+%/.test(st), 'shrinking stage shown: ' + st); await page.screenshot({ path: OUT + '/2b-shrinking.png' });
+    let up = ''; for (let i = 0; i < 1200 && !/→/.test(up); i++) { up = await page.locator('#upText').textContent().catch(() => ''); if (!/→/.test(up)) await page.waitForTimeout(100); }
+    ok(/→/.test(up), 'before/after size shown: ' + up);
+  }
   if (sawBar) await page.screenshot({ path: OUT + '/2-progress.png' });
   const msg = page.locator('.msg:not(.pending)', { hasText: '[test] media upload check' }).last();
   await msg.waitFor({ timeout: 900000 });
