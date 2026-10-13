@@ -32,7 +32,7 @@ const TYPES = { html: 'text/html', js: 'text/javascript', css: 'text/css', webma
   ok(sawBar, 'progress bar shown while uploading');
   if (sawBar) await page.screenshot({ path: OUT + '/2-progress.png' });
   const msg = page.locator('.msg:not(.pending)', { hasText: '[test] media upload check' }).last();
-  await msg.waitFor({ timeout: 60000 });
+  await msg.waitFor({ timeout: 900000 });
   await page.waitForFunction(() => { const m = [...document.querySelectorAll('.msg:not(.pending)')].pop(); const i = m && m.querySelector('img[src]'); return i && i.complete && i.naturalWidth > 0; }, null, { timeout: 30000 });
   const info = await msg.evaluate(el => { const i = el.querySelector('img'), v = el.querySelector('video'); return { id: el.dataset.id, iw: i.naturalWidth, ih: i.naturalHeight, isrc: i.src, vsrc: v && v.src, pi: v && v.hasAttribute('playsinline'), ctl: v && v.controls }; });
   ok(info.iw > 0 && info.iw <= 2048, `photo renders inline, resized to ${info.iw}x${info.ih}`);

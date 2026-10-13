@@ -1,11 +1,11 @@
 /* BotWeb: one group chat for Brad and his bots. Talks to the botweb-relay (the relay holds the GitHub access;
    this public app only knows a passcode, typed once and kept on this phone). No chat content lives in this repo. */
 'use strict';
-const VERSION = '1.1.0';
+const VERSION = '1.1.1';
 const RELAY = (window.BOTWEB_RELAY || 'https://botweb-relay.vercel.app/api/');
 const TZ = 'America/New_York', POLL_MS = 4000;
 const K = { pass: 'bw.passcode', as: 'bw.postAs', draft: 'bw.draft', cache: 'bw.cache', people: 'bw.people', outbox: 'bw.outbox', reply: 'bw.reply', signed: 'bw.signed' };
-const MAX_VIDEO = 200 * 1024 * 1024, MAX_IMAGE_IN = 60 * 1024 * 1024, MAX_IMAGE_PX = 2048, MAX_FILES = 10;
+const MAX_VIDEO = 400 * 1024 * 1024, MAX_IMAGE_IN = 60 * 1024 * 1024, MAX_IMAGE_PX = 2048, MAX_FILES = 10;
 const DEFAULT_PEOPLE = [
   { id: 'brad', name: 'Brad', kind: 'human', color: '#4F9DFF', initial: 'B' },
   { id: 'dev', name: 'CreateAWar Game Developer', kind: 'bot', color: '#F5A623', initial: 'D' },
@@ -367,7 +367,7 @@ function addFiles(list) {
   for (const f of list) {
     const kind = /^video\//.test(f.type) || /\.(mov|mp4|m4v|webm)$/i.test(f.name) ? 'video' : /^image\//.test(f.type) || /\.(heic|heif)$/i.test(f.name) ? 'image' : null;
     if (!kind) { toast(esc(f.name) + ' is not a photo or video'); continue; }
-    if (kind === 'video' && f.size > MAX_VIDEO) { toast(`That video is ${fmtMB(f.size)}. Videos can be up to 200 MB. Try trimming it or sending a shorter clip.`, 6000); continue; }
+    if (kind === 'video' && f.size > MAX_VIDEO) { toast(`That video is ${fmtMB(f.size)}. Videos can be up to 400 MB. Try trimming it or sending a shorter clip.`, 6000); continue; }
     if (kind === 'image' && f.size > MAX_IMAGE_IN) { toast(`That photo is ${fmtMB(f.size)}, too big to send.`, 5000); continue; }
     if (picked.length >= MAX_FILES) { toast(`Up to ${MAX_FILES} at a time`); break; }
     picked.push({ file: f, kind, url: URL.createObjectURL(f) });
@@ -414,6 +414,23 @@ function putFile(url, blob, type, onProgress) {
     x.send(blob);
   });
 }
+// Vercel Blob client upload (vendored SDK). Files over 8 MB go multipart: parallel 8 MB parts, failed parts retried.
+let blobSdk = null;
+const rndHex = n => [...crypto.getRandomValues(new Uint8Array(n))].map(b => b.toString(16).padStart(2, '0')).join('');
+const safeName = n => (String(n || 'file').normalize('NFKD').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-.]+|-+$/g, '') || 'file').slice(-80);
+async function blobUpload(it, onProgress) {
+  if (!navigator.onLine) throw new RelayError('offline');
+  try { blobSdk = blobSdk || await import('./vendor/blob-client-2.8.1.js'); } catch (_) { throw new RelayError('network', "Couldn't load the uploader. Check your connection and try again."); }
+  const pathname = `media/${new Date().toISOString().slice(0, 7)}/${rndHex(12)}/${safeName(it.name)}`;
+  try {
+    return await blobSdk.upload(pathname, it.blob, { access: 'private', contentType: it.type, multipart: it.blob.size > 8 * 1048576,
+      handleUploadUrl: RELAY + 'files/client-token', headers: { 'x-passcode': pass || '' }, clientPayload: JSON.stringify({ type: it.type }),
+      onUploadProgress: e => onProgress(e.loaded) });
+  } catch (e) {
+    if (!navigator.onLine) throw new RelayError('offline');
+    throw new RelayError('server', 'Upload failed: ' + String(e && e.message || e).replace(/^Vercel Blob: /, '').slice(0, 160));
+  }
+}
 async function uploadAll() {
   uploading = true; updateSend(); $('#tray').classList.add('busy'); $('#upBar').hidden = false;
   const bar = (f, t) => { $('#upFill').style.width = Math.round(f * 100) + '%'; $('#upText').textContent = t; };
@@ -428,8 +445,7 @@ async function uploadAll() {
     for (const [i, it] of items.entries()) {
       const label = items.length > 1 ? `Uploading ${i + 1} of ${items.length}` : 'Uploading';
       bar(doneBytes / total, `${label}… ${Math.round(doneBytes / total * 100)}%`);
-      const t = await api('files/upload', { name: it.name, type: it.type, size: it.blob.size });
-      const r = await putFile(t.uploadUrl, it.blob, it.type, n => { const f = (doneBytes + n) / total; bar(f, `${label}… ${Math.round(f * 100)}% · ${fmtMB(doneBytes + n)} of ${fmtMB(total)}`); });
+      const r = await blobUpload(it, n => { const f = (doneBytes + n) / total; bar(f, `${label}… ${Math.round(f * 100)}% · ${fmtMB(doneBytes + n)} of ${fmtMB(total)}`); });
       doneBytes += it.blob.size;
       out.push({ name: it.name, url: r.url, mime: it.type, size: it.blob.size, w: it.w, h: it.h, dur: it.dur });
     }
