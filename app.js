@@ -1,10 +1,11 @@
 /* BotWeb: one group chat for Brad and his bots. Talks to the botweb-relay (the relay holds the GitHub access;
    this public app only knows a passcode, typed once and kept on this phone). No chat content lives in this repo. */
 'use strict';
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const RELAY = (window.BOTWEB_RELAY || 'https://botweb-relay.vercel.app/api/');
 const TZ = 'America/New_York', POLL_MS = 4000;
-const K = { pass: 'bw.passcode', as: 'bw.postAs', draft: 'bw.draft', cache: 'bw.cache', people: 'bw.people', outbox: 'bw.outbox', reply: 'bw.reply' };
+const K = { pass: 'bw.passcode', as: 'bw.postAs', draft: 'bw.draft', cache: 'bw.cache', people: 'bw.people', outbox: 'bw.outbox', reply: 'bw.reply', signed: 'bw.signed' };
+const MAX_VIDEO = 200 * 1024 * 1024, MAX_IMAGE_IN = 60 * 1024 * 1024, MAX_IMAGE_PX = 2048, MAX_FILES = 10;
 const DEFAULT_PEOPLE = [
   { id: 'brad', name: 'Brad', kind: 'human', color: '#4F9DFF', initial: 'B' },
   { id: 'dev', name: 'CreateAWar Game Developer', kind: 'bot', color: '#F5A623', initial: 'D' },
@@ -48,6 +49,7 @@ const KIND_LONG = { human: 'You, from this phone', bot: 'Bot on the box', paste:
 const avatar = (p, cls = 'av') => `<span class="${cls}" style="background:${esc(p.color)}">${esc(p.initial || '?')}</span>`;
 let toastT;
 function toast(html, ms = 3200) { const t = $('#toast'); t.innerHTML = html; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, ms); }
+const snip = m => m.text ? m.text : (m.attachments || []).map(a => /^video\//.test(a.mime || '') ? '🎬 Video' : /^image\//.test(a.mime || '') ? '📷 Photo' : '📎 ' + a.name).join(' ') || '';
 const sorted = () => [...msgs.values()].sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
 function saveCache() { ls.set(K.cache, sorted().slice(-400)); }
 
@@ -69,13 +71,54 @@ function setConn(ok) {
   $('#offline').hidden = navigator.onLine;
 }
 
+/* ---------- media: private Blob files are shown through short-lived signed links from the relay ---------- */
+const PRIV = /^https:\/\/[a-z0-9]+\.private\.blob\.vercel-storage\.com\//;
+let signedCache = ls.get(K.signed, {}) || {};
+for (const [u, v] of Object.entries(signedCache)) if (!v || v.until - Date.now() < 30 * 60e3) delete signedCache[u];
+const kindOf = a => /^image\//.test(a.mime || '') || (!a.mime && /\.(jpe?g|png|gif|webp|heic|avif)$/i.test(a.name || '')) ? 'image'
+  : /^video\//.test(a.mime || '') || (!a.mime && /\.(mp4|mov|m4v|webm)$/i.test(a.name || '')) ? 'video' : 'file';
+function srcFor(url) { if (!PRIV.test(url)) return url; const h = signedCache[url]; return h && h.until - Date.now() > 10 * 60e3 ? h.url : ''; }
+function attHtml(a) {
+  if (!a.url) return `<span class="att">📎 ${esc(a.name)}</span>`;
+  const k = kindOf(a), src = srcFor(a.url), ar = a.w && a.h ? ` style="aspect-ratio:${+a.w}/${+a.h}"` : '';
+  const s = src ? ` src="${esc(src)}"` : '';
+  if (k === 'image') return `<button type="button" class="media" data-view="${esc(a.url)}" aria-label="Open photo ${esc(a.name)}"><img data-blob="${esc(a.url)}"${s}${ar} alt="${esc(a.name)}" loading="lazy" decoding="async"></button>`;
+  if (k === 'video') return `<div class="media"><video data-blob="${esc(a.url)}"${s}${ar} controls playsinline preload="metadata"></video></div>`;
+  if (PRIV.test(a.url)) return `<button type="button" class="att" data-open="${esc(a.url)}">📎 ${esc(a.name)}</button>`;
+  return `<a class="att" href="${esc(a.url)}" target="_blank" rel="noopener noreferrer">📎 ${esc(a.name)}</a>`;
+}
+let signing = null;
+async function signUrls(urls) {
+  urls = [...new Set(urls)].filter(u => PRIV.test(u) && !srcFor(u));
+  if (!urls.length || !pass) return;
+  const d = await api('files/sign', { urls });
+  for (const [u, s] of Object.entries(d.urls || {})) signedCache[u] = { url: s, until: d.validUntil || Date.now() + 6 * 3600e3 };
+  ls.set(K.signed, Object.fromEntries(Object.entries(signedCache).slice(-300)));
+}
+let hydrateAgain = false;
+async function hydrateMedia() {
+  if (signing) { hydrateAgain = true; return; }
+  const els = [...document.querySelectorAll('#list [data-blob]:not([src])')]; if (!els.length) return;
+  signing = signUrls(els.map(e => e.dataset.blob)).catch(() => {});
+  await signing; signing = null;
+  for (const e of els) { const s = srcFor(e.dataset.blob); if (s) e.src = s; }
+  if (hydrateAgain) { hydrateAgain = false; hydrateMedia(); }
+}
+async function openViewer(url) {
+  await signUrls([url]).catch(() => {});
+  const s = srcFor(url); if (!s) { toast("Couldn't open that photo"); return; }
+  $('#viewerImg').src = s; $('#viewer').hidden = false;
+}
+$('#viewer').addEventListener('click', () => { $('#viewer').hidden = true; $('#viewerImg').removeAttribute('src'); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#viewer').hidden) $('#viewer').click(); });
+
 /* ---------- rendering ---------- */
 let rendered = '';
 function nearBottom() { const l = $('#list'); return l.scrollHeight - l.scrollTop - l.clientHeight < 120; }
 function scrollBottom() { const l = $('#list'); l.scrollTop = l.scrollHeight; $('#newPill').hidden = true; }
 function render(force) {
   const list = sorted();
-  const pend = outbox.map(o => ({ id: o.tmp, from: o.from, text: o.text, ts: o.at, replyTo: o.replyTo, _pending: true, _failed: o.failed }));
+  const pend = outbox.map(o => ({ id: o.tmp, from: o.from, text: o.text, ts: o.at, replyTo: o.replyTo, attachments: o.attachments, _pending: true, _failed: o.failed }));
   const all = list.concat(pend);
   const sig = all.map(m => m.id + (m._failed ? 'f' : '')).join(',') + '|' + people.map(p => p.name + p.color + p.initial).join(',');
   if (!force && sig === rendered) return;
@@ -88,24 +131,29 @@ function render(force) {
     if (dk !== lastDay) { const s = document.createElement('div'); s.className = 'day'; s.innerHTML = `<span>${esc(dayLabel(d))}</span>`; frag.appendChild(s); lastDay = dk; prev = null; }
     const p = person(m.from), me = m.from === ME;
     const cont = prev && prev.from === m.from && d - new Date(prev.ts) < 5 * 60e3 && !m.replyTo;
+    const key = m.id + '|' + (cont ? 1 : 0) + '|' + (m._pending ? (m._failed ? 'f' : 'p') : '') + '|' + (m.replyTo && msgs.has(m.replyTo) ? 1 : 0) + '|' + p.color + p.initial;
+    const old = !force && box.querySelector(`.msg[data-key="${CSS.escape(key)}"]`);
+    if (old) { frag.appendChild(old); prev = m; continue; }
     const el = document.createElement('div');
+    el.dataset.key = key;
     el.className = 'msg' + (me ? ' me' : '') + (cont ? ' cont' : '') + (m._pending ? ' pending' : '') + (m._failed ? ' failed' : '');
     el.dataset.id = m.id;
     let quote = '';
     if (m.replyTo) {
       const q = msgs.get(m.replyTo), qp = q ? person(q.from) : null;
-      quote = `<button class="quote" data-jump="${esc(m.replyTo)}" style="--qc:${esc(qp ? qp.color : '#8C99AB')}"><b>${esc(q ? q.from : 'Earlier message')}</b><span>${esc(q ? q.text.slice(0, 200) : 'Not loaded')}</span></button>`;
+      quote = `<button class="quote" data-jump="${esc(m.replyTo)}" style="--qc:${esc(qp ? qp.color : '#8C99AB')}"><b>${esc(q ? q.from : 'Earlier message')}</b><span>${esc(q ? snip(q).slice(0, 200) : 'Not loaded')}</span></button>`;
     }
-    const att = (m.attachments || []).map(a => a.url ? `<a class="att" href="${esc(a.url)}" target="_blank" rel="noopener noreferrer">📎 ${esc(a.name)}</a>` : `<span class="att">📎 ${esc(a.name)}</span>`).join('');
+    const att = (m.attachments || []).map(attHtml).join('');
     const status = m._pending ? (m._failed ? '<span>Not sent · tap to retry</span>' : '<span>Sending…</span>') : `<button class="rep" data-reply="${esc(m.id)}">Reply</button>`;
     el.innerHTML = `${avatar(p)}<div class="bubble">`
       + `<div class="who" style="color:${esc(p.color)}">${esc(m.from)}${KIND_LABEL[p.kind] && p.kind !== 'human' ? `<span class="tag">${KIND_LABEL[p.kind]}</span>` : ''}</div>`
-      + quote + `<div class="text">${linkify(m.text)}</div>${att}`
+      + quote + att + (m.text ? `<div class="text">${linkify(m.text)}</div>` : '')
       + `<div class="meta">${status}<time datetime="${esc(m.ts)}" title="${esc(fmtFull.format(d))}">${esc(fmtTime.format(d))}</time></div></div>`;
     frag.appendChild(el); prev = m;
   }
   box.querySelectorAll('.day,.msg').forEach(n => n.remove());
   box.appendChild(frag);
+  hydrateMedia();
   $('#empty').hidden = all.length > 0;
   if (wasBottom) scrollBottom();
   else if (all.length > prevCount) $('#newPill').hidden = false;
@@ -130,7 +178,7 @@ function renderReply() {
   if (!m) return;
   const p = person(m.from);
   $('#replyBar').style.setProperty('--qc', p.color);
-  $('#rbWho').textContent = 'Replying to ' + m.from; $('#rbSnip').textContent = m.text.slice(0, 160);
+  $('#rbWho').textContent = 'Replying to ' + m.from; $('#rbSnip').textContent = snip(m).slice(0, 160);
 }
 function setReply(id) { replyTo = id; ls.set(K.reply, id); renderReply(); if (id) $('#input').focus(); }
 
@@ -171,9 +219,18 @@ async function loadPeople() {
 }
 
 /* ---------- sending (outbox survives going offline / closing the app) ---------- */
-function send(text) {
-  text = text.trim(); if (!text) return;
-  outbox.push({ tmp: 'tmp_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), from: postAs, text, replyTo: replyTo || undefined, at: new Date().toISOString() });
+let picked = [], uploading = false; // [{file, kind, url (preview object URL)}]
+async function send(text) {
+  text = text.trim(); if ((!text && !picked.length) || uploading) return;
+  let attachments;
+  if (picked.length) {
+    if (!pass) { askPass(false); return; }
+    try { attachments = await uploadAll(); } catch (e) {
+      toast(e.kind === 'offline' ? "You're offline. Your photos are still here; send again when you're back." : esc(e.message || "Upload failed. Try again."), 5000); return;
+    }
+    clearPicked();
+  }
+  outbox.push({ tmp: 'tmp_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), from: postAs, text, replyTo: replyTo || undefined, attachments, at: new Date().toISOString() });
   ls.set(K.outbox, outbox);
   $('#input').value = ''; ls.del(K.draft); autoGrow(); updateSend();
   setReply(null);
@@ -187,7 +244,7 @@ async function flushOutbox() {
     while (outbox.length) {
       const o = outbox[0];
       try {
-        const d = await api('messages/post', { from: o.from, text: o.text, replyTo: o.replyTo });
+        const d = await api('messages/post', { from: o.from, text: o.text, replyTo: o.replyTo, attachments: o.attachments });
         outbox.shift(); ls.set(K.outbox, outbox);
         merge([d.message]); setConn(true); render();
       } catch (e) {
@@ -293,6 +350,8 @@ $('#scrim').addEventListener('click', closeSheet);
 /* ---------- message list interactions ---------- */
 $('#list').addEventListener('click', e => {
   const r = e.target.closest('[data-reply]'); if (r) { setReply(r.dataset.reply); return; }
+  const v = e.target.closest('[data-view]'); if (v) { openViewer(v.dataset.view); return; }
+  const fo = e.target.closest('[data-open]'); if (fo) { const w = window.open('', '_blank'); signUrls([fo.dataset.open]).then(() => { const s = srcFor(fo.dataset.open); if (s && w) w.location = s; else if (w) w.close(); }); return; }
   const j = e.target.closest('[data-jump]');
   if (j) { const el = document.querySelector(`.msg[data-id="${CSS.escape(j.dataset.jump)}"]`); if (el) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); } else toast('That message is older than what is loaded'); return; }
   const f = e.target.closest('.msg.failed'); if (f) { outbox.forEach(o => { o.failed = false; }); render(true); flushOutbox(); }
@@ -302,9 +361,86 @@ $('#newPill').addEventListener('click', scrollBottom);
 $('#replyX').addEventListener('click', () => setReply(null));
 $('#refreshBtn').addEventListener('click', () => { if (!pass) { askPass(false); return; } poll(true); loadPeople(); });
 
+/* ---------- attachments: pick, preview, shrink photos, upload straight to the private store with progress ---------- */
+const fmtMB = n => n >= 1048576 ? (n / 1048576).toFixed(n >= 10485760 ? 0 : 1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
+function addFiles(list) {
+  for (const f of list) {
+    const kind = /^video\//.test(f.type) || /\.(mov|mp4|m4v|webm)$/i.test(f.name) ? 'video' : /^image\//.test(f.type) || /\.(heic|heif)$/i.test(f.name) ? 'image' : null;
+    if (!kind) { toast(esc(f.name) + ' is not a photo or video'); continue; }
+    if (kind === 'video' && f.size > MAX_VIDEO) { toast(`That video is ${fmtMB(f.size)}. Videos can be up to 200 MB. Try trimming it or sending a shorter clip.`, 6000); continue; }
+    if (kind === 'image' && f.size > MAX_IMAGE_IN) { toast(`That photo is ${fmtMB(f.size)}, too big to send.`, 5000); continue; }
+    if (picked.length >= MAX_FILES) { toast(`Up to ${MAX_FILES} at a time`); break; }
+    picked.push({ file: f, kind, url: URL.createObjectURL(f) });
+  }
+  renderTray(); updateSend();
+}
+function clearPicked() { picked.forEach(p => URL.revokeObjectURL(p.url)); picked = []; renderTray(); updateSend(); }
+function renderTray() {
+  $('#tray').hidden = !picked.length;
+  $('#trayItems').innerHTML = picked.map((p, i) => `<div class="tray-item">${p.kind === 'video' ? `<video src="${p.url}#t=0.1" muted playsinline preload="metadata"></video><span class="vbadge">▶ ${fmtMB(p.file.size)}</span>` : `<img src="${p.url}" alt="">`}<button type="button" class="rm" data-rm="${i}" aria-label="Remove">✕</button></div>`).join('');
+}
+$('#attachBtn').addEventListener('click', () => { if (!uploading) $('#fileInput').click(); });
+$('#fileInput').addEventListener('change', e => { addFiles([...e.target.files]); e.target.value = ''; });
+$('#trayItems').addEventListener('click', e => { const b = e.target.closest('[data-rm]'); if (!b || uploading) return; const [p] = picked.splice(+b.dataset.rm, 1); URL.revokeObjectURL(p.url); renderTray(); updateSend(); });
+$('#input').addEventListener('paste', e => { const fs = [...(e.clipboardData && e.clipboardData.files || [])]; if (fs.length) { e.preventDefault(); addFiles(fs); } });
+
+function loadImage(file) {
+  return new Promise((res, rej) => { const u = URL.createObjectURL(file), i = new Image(); i.onload = () => res({ img: i, w: i.naturalWidth, h: i.naturalHeight, done: () => URL.revokeObjectURL(u) }); i.onerror = () => { URL.revokeObjectURL(u); rej(new Error('bad image')); }; i.src = u; });
+}
+// Photos and screenshots are resized to at most 2048 px on the long side (JPEG); GIFs and small files go as they are.
+async function prepImage(file) {
+  const base = (file.name || 'photo').replace(/\.[^.]+$/, '') || 'photo';
+  if (/gif|svg/.test(file.type)) return { blob: file, name: file.name, type: file.type };
+  let im; try { im = await loadImage(file); } catch (_) { return { blob: file, name: file.name, type: file.type || 'image/jpeg' }; }
+  const { w, h } = im, scale = Math.min(1, MAX_IMAGE_PX / Math.max(w, h));
+  if (scale === 1 && file.size < 1.5 * 1048576 && /^image\/(jpeg|png|webp)$/.test(file.type)) { im.done(); return { blob: file, name: file.name, type: file.type, w, h }; }
+  const cw = Math.round(w * scale), chh = Math.round(h * scale), c = document.createElement('canvas'); c.width = cw; c.height = chh;
+  const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, cw, chh); g.drawImage(im.img, 0, 0, cw, chh); im.done();
+  const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.86));
+  if (!blob || (scale === 1 && blob.size >= file.size && /^image\/(jpeg|png|webp)$/.test(file.type))) return { blob: file, name: file.name, type: file.type, w, h };
+  return { blob, name: base + '.jpg', type: 'image/jpeg', w: cw, h: chh };
+}
+function videoInfo(url) {
+  return new Promise(res => { const v = document.createElement('video'); const t = setTimeout(() => res({}), 4000);
+    v.preload = 'metadata'; v.muted = true; v.onloadedmetadata = () => { clearTimeout(t); res({ w: v.videoWidth || undefined, h: v.videoHeight || undefined, dur: isFinite(v.duration) ? v.duration : undefined }); }; v.onerror = () => { clearTimeout(t); res({}); }; v.src = url; });
+}
+function putFile(url, blob, type, onProgress) {
+  return new Promise((res, rej) => {
+    const x = new XMLHttpRequest(); x.open('PUT', url); x.setRequestHeader('content-type', type);
+    x.upload.onprogress = e => { if (e.lengthComputable) onProgress(e.loaded); };
+    x.onload = () => { let d = null; try { d = JSON.parse(x.responseText); } catch (_) {}
+      if (x.status >= 200 && x.status < 300 && d && d.url) res(d); else rej(new RelayError('server', (d && d.error && d.error.message) || 'Upload failed (' + x.status + ')', x.status)); };
+    x.onerror = () => rej(new RelayError(navigator.onLine ? 'network' : 'offline', 'Upload failed. Check your connection and try again.'));
+    x.send(blob);
+  });
+}
+async function uploadAll() {
+  uploading = true; updateSend(); $('#tray').classList.add('busy'); $('#upBar').hidden = false;
+  const bar = (f, t) => { $('#upFill').style.width = Math.round(f * 100) + '%'; $('#upText').textContent = t; };
+  try {
+    bar(0, 'Preparing…');
+    const items = [];
+    for (const p of picked) {
+      if (p.kind === 'image') items.push({ ...(await prepImage(p.file)), kind: 'image' });
+      else items.push({ blob: p.file, name: p.file.name || 'video.mp4', type: p.file.type || (/\.mov$/i.test(p.file.name) ? 'video/quicktime' : 'video/mp4'), kind: 'video', ...(await videoInfo(p.url)) });
+    }
+    const total = items.reduce((n, i) => n + i.blob.size, 0) || 1; let doneBytes = 0; const out = [];
+    for (const [i, it] of items.entries()) {
+      const label = items.length > 1 ? `Uploading ${i + 1} of ${items.length}` : 'Uploading';
+      bar(doneBytes / total, `${label}… ${Math.round(doneBytes / total * 100)}%`);
+      const t = await api('files/upload', { name: it.name, type: it.type, size: it.blob.size });
+      const r = await putFile(t.uploadUrl, it.blob, it.type, n => { const f = (doneBytes + n) / total; bar(f, `${label}… ${Math.round(f * 100)}% · ${fmtMB(doneBytes + n)} of ${fmtMB(total)}`); });
+      doneBytes += it.blob.size;
+      out.push({ name: it.name, url: r.url, mime: it.type, size: it.blob.size, w: it.w, h: it.h, dur: it.dur });
+    }
+    bar(1, 'Sent');
+    return out;
+  } finally { uploading = false; updateSend(); $('#tray').classList.remove('busy'); $('#upBar').hidden = true; }
+}
+
 /* ---------- composer (draft is kept on the phone, even offline) ---------- */
 function autoGrow() { const t = $('#input'); t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight + 2, window.innerHeight * 0.4) + 'px'; }
-function updateSend() { $('#sendBtn').disabled = !$('#input').value.trim(); }
+function updateSend() { $('#sendBtn').disabled = uploading || (!$('#input').value.trim() && !picked.length); }
 $('#input').addEventListener('input', () => { ls.set(K.draft, $('#input').value); autoGrow(); updateSend(); });
 $('#composer').addEventListener('submit', e => { e.preventDefault(); send($('#input').value); $('#input').focus(); });
 $('#input').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send($('#input').value); } });
