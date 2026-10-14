@@ -1,7 +1,7 @@
 /* BotWeb: one group chat for Brad and his bots. Talks to the botweb-relay (the relay holds the GitHub access;
    this public app only knows a passcode, typed once and kept on this phone). No chat content lives in this repo. */
 'use strict';
-const VERSION = '1.3.0';
+const VERSION = '1.3.1';
 const RELAY = (window.BOTWEB_RELAY || 'https://botweb-relay.vercel.app/api/');
 const TZ = 'America/New_York', POLL_MS = 4000;
 const K = { pass: 'bw.passcode', as: 'bw.postAs', draft: 'bw.draft', cache: 'bw.cache', people: 'bw.people', outbox: 'bw.outbox', reply: 'bw.reply', signed: 'bw.signed' };
@@ -47,7 +47,8 @@ function person(name) {
 }
 const KIND_LABEL = { human: 'You', bot: 'Bot', paste: 'Paste-in', other: '' };
 const KIND_LONG = { human: 'You, from this phone', bot: 'Bot on the box', paste: 'Paste-in: paste their reply', other: '' };
-const avatar = (p, cls = 'av') => `<span class="${cls}" style="background:${esc(p.color)}">${esc(p.initial || '?')}</span>`;
+const isBot = p => p && (p.kind === 'bot' || p.kind === 'paste');
+const avatar = (p, cls = 'av') => `<span class="${cls}${isBot(p) ? ' mentionable' : ''}"${isBot(p) ? ` data-mention="${esc(p.name)}"` : ''} style="background:${esc(p.color)}">${esc(p.initial || '?')}</span>`;
 let toastT;
 function toast(html, ms = 3200) { const t = $('#toast'); t.innerHTML = html; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, ms); }
 const snip = m => m.text ? m.text : (m.attachments || []).map(a => /^video\//.test(a.mime || '') ? '🎬 Video' : /^image\//.test(a.mime || '') ? '📷 Photo' : '📎 ' + a.name).join(' ') || '';
@@ -513,6 +514,35 @@ async function uploadAll() {
     return out;
   } finally { uploading = false; updateSend(); $('#tray').classList.remove('busy'); $('#upBar').hidden = true; dropTemp(items); }
 }
+
+/* ---------- long-press a bot's avatar to @mention it ---------- */
+function insertMention(name) {
+  const t = $('#input'), v = t.value, a = t.selectionStart ?? v.length, b = t.selectionEnd ?? v.length;
+  const pre = v.slice(0, a), ins = (pre && !/\s$/.test(pre) ? ' ' : '') + '@' + name + ' ';
+  t.value = pre + ins + v.slice(b); const c = a + ins.length;
+  ls.set(K.draft, t.value); autoGrow(); updateSend();
+  t.focus(); try { t.setSelectionRange(c, c); } catch (_) {}
+  try { navigator.vibrate && navigator.vibrate(15); } catch (_) {}
+  toast(esc('@' + name) + ' added', 1600);
+}
+let lp = null, lpFired = 0;
+const LP_MS = 450, LP_MOVE = 10;
+function lpCancel() { if (lp) { clearTimeout(lp.t); lp = null; } }
+document.addEventListener('pointerdown', e => {
+  const av = e.target.closest('[data-mention]'); lpCancel();
+  if (!av || (e.pointerType === 'mouse' && e.button !== 0)) return;
+  lp = { x: e.clientX, y: e.clientY, id: e.pointerId, t: setTimeout(() => {
+    lp = null; lpFired = Date.now();
+    if (av.closest('#asSheet')) closeSheet();
+    insertMention(av.dataset.mention);
+  }, LP_MS) };
+}, true);
+document.addEventListener('pointermove', e => { if (lp && e.pointerId === lp.id && Math.hypot(e.clientX - lp.x, e.clientY - lp.y) > LP_MOVE) lpCancel(); }, true);
+['pointerup', 'pointercancel'].forEach(t => document.addEventListener(t, lpCancel, true));
+document.addEventListener('scroll', lpCancel, true);
+// after a long press, swallow the click that follows so a normal tap's action doesn't also run
+document.addEventListener('click', e => { if (Date.now() - lpFired < 700 && e.target.closest('[data-mention]')) { e.preventDefault(); e.stopPropagation(); } }, true);
+document.addEventListener('contextmenu', e => { if (e.target.closest('[data-mention]')) e.preventDefault(); });
 
 /* ---------- composer (draft is kept on the phone, even offline) ---------- */
 function autoGrow() { const t = $('#input'); t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight + 2, window.innerHeight * 0.4) + 'px'; }

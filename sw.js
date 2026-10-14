@@ -1,6 +1,6 @@
 /* BotWeb service worker: the app opens offline after the first visit; chat traffic (POST to the relay) is never cached. */
-const VERSION = 'botweb-1.3.0';
-const SHELL = ['./', './index.html', './styles.css?v=1.3.0', './app.js?v=1.3.0', './manifest.webmanifest', './vendor/blob-client-2.8.1.js',
+const VERSION = 'botweb-1.3.1';
+const SHELL = ['./', './index.html', './styles.css?v=1.3.1', './app.js?v=1.3.1', './manifest.webmanifest', './vendor/blob-client-2.8.1.js',
   './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png', './icons/apple-touch-icon.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL.map(u => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));

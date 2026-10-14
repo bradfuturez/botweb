@@ -146,3 +146,6 @@ button.media { padding: 0; border: 0; cursor: zoom-in; width: calc(100% + 10px);
 .orig-row input { width: 18px; height: 18px; accent-color: var(--accent); }
 .orig-row small { color: var(--muted); font-size: 12px; }
 .tray.busy .orig-row { display: none; }
+
+/* long-press an avatar to @mention */
+.mentionable{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;touch-action:manipulation;cursor:pointer}
