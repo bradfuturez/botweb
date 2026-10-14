@@ -542,6 +542,8 @@ document.addEventListener('pointermove', e => { if (lp && e.pointerId === lp.id 
 document.addEventListener('scroll', lpCancel, true);
 // after a long press, swallow the click that follows so a normal tap's action doesn't also run
 document.addEventListener('click', e => { if (Date.now() - lpFired < 700 && e.target.closest('[data-mention]')) { e.preventDefault(); e.stopPropagation(); } }, true);
+// the finger lifting off a non-focusable avatar would blur the composer: cancel that and keep focus on the box
+['touchend', 'mouseup'].forEach(t => document.addEventListener(t, e => { if (Date.now() - lpFired < 700) { if (e.cancelable) e.preventDefault(); setTimeout(() => $('#input').focus(), 0); } }, { capture: true, passive: false }));
 document.addEventListener('contextmenu', e => { if (e.target.closest('[data-mention]')) e.preventDefault(); });
 
 /* ---------- composer (draft is kept on the phone, even offline) ---------- */
