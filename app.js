@@ -1,10 +1,10 @@
 /* BotWeb: one group chat for Brad and his bots. Talks to the botweb-relay (the relay holds the GitHub access;
    this public app only knows a passcode, typed once and kept on this phone). No chat content lives in this repo. */
 'use strict';
-const VERSION = '1.3.1';
+const VERSION = '1.4.0';
 const RELAY = (window.BOTWEB_RELAY || 'https://botweb-relay.vercel.app/api/');
 const TZ = 'America/New_York', POLL_MS = 4000;
-const K = { pass: 'bw.passcode', as: 'bw.postAs', draft: 'bw.draft', cache: 'bw.cache', people: 'bw.people', outbox: 'bw.outbox', reply: 'bw.reply', signed: 'bw.signed' };
+const K = { pass: 'bw.passcode', as: 'bw.postAs', draft: 'bw.draft', cache: 'bw.cache', people: 'bw.people', outbox: 'bw.outbox', reply: 'bw.reply', signed: 'bw.signed', seenAt: 'bw.mentionSeen', pushOn: 'bw.pushOn' };
 const MAX_VIDEO = 400 * 1024 * 1024, MAX_IMAGE_IN = 60 * 1024 * 1024, MAX_IMAGE_PX = 2048, MAX_FILES = 10;
 const DEFAULT_PEOPLE = [
   { id: 'brad', name: 'Brad', kind: 'human', color: '#4F9DFF', initial: 'B' },
@@ -48,11 +48,52 @@ function person(name) {
 const KIND_LABEL = { human: 'You', bot: 'Bot', paste: 'Paste-in', other: '' };
 const KIND_LONG = { human: 'You, from this phone', bot: 'Bot on the box', paste: 'Paste-in: paste their reply', other: '' };
 const isBot = p => p && (p.kind === 'bot' || p.kind === 'paste');
-const avatar = (p, cls = 'av') => `<span class="${cls}${isBot(p) ? ' mentionable' : ''}"${isBot(p) ? ` data-mention="${esc(p.name)}"` : ''} style="background:${esc(p.color)}">${esc(p.initial || '?')}</span>`;
+const canMention = p => p && p.name && p.name !== '?';
+const avatar = (p, cls = 'av') => `<span class="${cls}${canMention(p) ? ' mentionable' : ''}"${canMention(p) ? ` data-mention="${esc(p.name)}"` : ''} style="background:${esc(p.color)}">${esc(p.initial || '?')}</span>`;
 let toastT;
 function toast(html, ms = 3200) { const t = $('#toast'); t.innerHTML = html; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, ms); }
 const snip = m => m.text ? m.text : (m.attachments || []).map(a => /^video\//.test(a.mime || '') ? '🎬 Video' : /^image\//.test(a.mime || '') ? '📷 Photo' : '📎 ' + a.name).join(' ') || '';
 const sorted = () => [...msgs.values()].sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
+/* ---------- @Brad attention pings ---------- */
+const MENTION_RE = /(^|[^\w@])@brad(\s+future)?(?![\w])/i;
+const isPing = m => !!m && !m._pending && typeof m.text === 'string' && MENTION_RE.test(m.text) && String(m.from || '').trim().toLowerCase() !== ME.toLowerCase();
+let seenAt = ls.get(K.seenAt, null); // ISO ts: pings at or before this are read
+if (!seenAt) { seenAt = new Date().toISOString(); ls.set(K.seenAt, seenAt); } // first run: older pings count as read
+const unreadPings = () => sorted().filter(m => isPing(m) && m.ts > seenAt);
+function markSeen(ts) { if (ts > seenAt) { seenAt = ts; ls.set(K.seenAt, ts); renderMentionPill(); } }
+function renderMentionPill() {
+  const n = unreadPings().length, b = $('#mentionPill');
+  b.hidden = !n; $('#mentionCount').textContent = n > 99 ? '99+' : String(n);
+  document.title = n ? `(${n}) BotWeb` : 'BotWeb';
+  try { if (navigator.setAppBadge) n ? navigator.setAppBadge(n) : navigator.clearAppBadge(); } catch (_) {}
+}
+function jumpTo(id) {
+  const el = document.querySelector(`.msg[data-id="${CSS.escape(id)}"]`);
+  if (!el) return false;
+  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
+  const m = msgs.get(id); if (m && isPing(m)) markSeen(m.ts);
+  return true;
+}
+const seenObs = 'IntersectionObserver' in window ? new IntersectionObserver(es => {
+  if (document.hidden) return;
+  for (const e of es) if (e.isIntersecting) { const m = msgs.get(e.target.dataset.id); if (m) markSeen(m.ts); seenObs.unobserve(e.target); }
+}, { threshold: 0.6 }) : null;
+let audioCtx = null;
+function pingAlert() { // in-app fallback when phone push isn't on
+  try { navigator.vibrate && navigator.vibrate([120, 60, 120]); } catch (_) {}
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const t = audioCtx.currentTime;
+    [880, 1320].forEach((f, i) => { const o = audioCtx.createOscillator(), g = audioCtx.createGain(); o.frequency.value = f;
+      g.gain.setValueAtTime(0.0001, t + i * 0.16); g.gain.exponentialRampToValueAtTime(0.25, t + i * 0.16 + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.16 + 0.15);
+      o.connect(g).connect(audioCtx.destination); o.start(t + i * 0.16); o.stop(t + i * 0.16 + 0.16); });
+  } catch (_) {}
+}
+['pointerdown', 'keydown'].forEach(t => document.addEventListener(t, () => { try { if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume(); } catch (_) {} }, { passive: true }));
+const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const pushActive = () => pushSupported() && ls.get(K.pushOn, false) && Notification.permission === 'granted';
+
 function saveCache() { ls.set(K.cache, sorted().slice(-400)); }
 
 /* ---------- relay ---------- */
@@ -133,12 +174,12 @@ function render(force) {
     if (dk !== lastDay) { const s = document.createElement('div'); s.className = 'day'; s.innerHTML = `<span>${esc(dayLabel(d))}</span>`; frag.appendChild(s); lastDay = dk; prev = null; }
     const p = person(m.from), me = m.from === ME;
     const cont = prev && prev.from === m.from && d - new Date(prev.ts) < 5 * 60e3 && !m.replyTo;
-    const key = m.id + '|' + (cont ? 1 : 0) + '|' + (m._pending ? (m._failed ? 'f' : 'p') : '') + '|' + (m.replyTo && msgs.has(m.replyTo) ? 1 : 0) + '|' + p.color + p.initial;
+    const key = m.id + (isPing(m) ? '@' : '') + '|' + (cont ? 1 : 0) + '|' + (m._pending ? (m._failed ? 'f' : 'p') : '') + '|' + (m.replyTo && msgs.has(m.replyTo) ? 1 : 0) + '|' + p.color + p.initial;
     const old = !force && box.querySelector(`.msg[data-key="${CSS.escape(key)}"]`);
     if (old) { frag.appendChild(old); prev = m; continue; }
     const el = document.createElement('div');
     el.dataset.key = key;
-    el.className = 'msg' + (me ? ' me' : '') + (cont ? ' cont' : '') + (m._pending ? ' pending' : '') + (m._failed ? ' failed' : '');
+    el.className = 'msg' + (me ? ' me' : '') + (cont ? ' cont' : '') + (m._pending ? ' pending' : '') + (m._failed ? ' failed' : '') + (isPing(m) ? ' mention' : '');
     el.dataset.id = m.id;
     let quote = '';
     if (m.replyTo) {
@@ -149,14 +190,17 @@ function render(force) {
     const status = m._pending ? (m._failed ? '<span>Not sent · tap to retry</span>' : '<span>Sending…</span>') : `<button class="rep" data-reply="${esc(m.id)}">Reply</button>`;
     el.innerHTML = `${avatar(p)}<div class="bubble">`
       + `<div class="who" style="color:${esc(p.color)}">${esc(m.from)}${KIND_LABEL[p.kind] && p.kind !== 'human' ? `<span class="tag">${KIND_LABEL[p.kind]}</span>` : ''}</div>`
-      + quote + att + (m.text ? `<div class="text">${linkify(m.text)}</div>` : '')
+      + (isPing(m) ? '<span class="at-badge" title="Mentions you">@</span>' : '')
+      + quote + att + (m.text ? `<div class="text">${linkify(m.text).replace(/(^|[^\w@])(@brad(?:\s+future)?)(?![\w])/gi, '$1<b class="at-me">$2</b>')}</div>` : '')
       + `<div class="meta">${status}<time datetime="${esc(m.ts)}" title="${esc(fmtFull.format(d))}">${esc(fmtTime.format(d))}</time></div></div>`;
     frag.appendChild(el); prev = m;
+    if (seenObs && isPing(m) && m.ts > seenAt) seenObs.observe(el);
   }
   box.querySelectorAll('.day,.msg').forEach(n => n.remove());
   box.appendChild(frag);
   hydrateMedia();
   $('#empty').hidden = all.length > 0;
+  renderMentionPill();
   if (wasBottom) scrollBottom();
   else if (all.length > prevCount) $('#newPill').hidden = false;
 }
@@ -185,9 +229,12 @@ function renderReply() {
 function setReply(id) { replyTo = id; ls.set(K.reply, id); renderReply(); if (id) $('#input').focus(); }
 
 /* ---------- sync ---------- */
+let booted = false;
 function merge(list) {
-  let changed = false;
-  for (const m of list || []) if (m && m.id && !msgs.has(m.id)) { msgs.set(m.id, m); changed = true; }
+  let changed = false, fresh = false;
+  for (const m of list || []) if (m && m.id && !msgs.has(m.id)) { msgs.set(m.id, m); changed = true; if (booted && isPing(m) && Date.now() - new Date(m.ts) < 10 * 60e3) fresh = true; }
+  booted = true;
+  if (fresh && !pushActive()) pingAlert();
   if (changed) saveCache();
   return changed;
 }
@@ -312,6 +359,7 @@ function renderPeopleEd() {
   </div>`).join('');
 }
 function openSettings() {
+  renderPushToggle();
   draftPeople = people.map(p => ({ ...p }));
   renderPeopleEd();
   $('#aboutLine').textContent = `BotWeb ${VERSION}. Times are shown in New York time. ${pass ? 'Passcode saved on this phone.' : 'No passcode saved.'}`;
@@ -515,6 +563,57 @@ async function uploadAll() {
   } finally { uploading = false; updateSend(); $('#tray').classList.remove('busy'); $('#upBar').hidden = true; dropTemp(items); }
 }
 
+/* ---------- phone notifications (Web Push) when a bot @mentions Brad ---------- */
+const b64u = s => { const p = '='.repeat((4 - s.length % 4) % 4), b = atob((s + p).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(b, c => c.charCodeAt(0)); };
+const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+function renderPushToggle() {
+  const chk = $('#pushChk'), hint = $('#pushHint');
+  if (!pushSupported()) {
+    chk.checked = false; chk.disabled = true;
+    hint.textContent = isIOS && !standalone() ? 'On iPhone, add BotWeb to your Home Screen (Share → Add to Home Screen) and open it from there to get alerts. Until then you get a sound and buzz while the app is open.'
+      : 'This browser can\'t do push alerts. You still get a sound and buzz while BotWeb is open.';
+    return;
+  }
+  chk.disabled = false; chk.checked = pushActive();
+  hint.textContent = Notification.permission === 'denied' ? 'Notifications are blocked for BotWeb. Allow them in your phone settings, then turn this on.'
+    : chk.checked ? 'On: you get a phone alert when a bot writes @Brad, even with BotWeb closed (at most one every 20 seconds).'
+    : 'Get a phone notification when a bot writes @Brad, even when BotWeb is closed.';
+}
+async function enablePush() {
+  if (!pass) throw new Error('Type the passcode first');
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') throw new Error(perm === 'denied' ? 'Notifications are blocked. Allow them in settings.' : 'Notifications not allowed');
+  const reg = await navigator.serviceWorker.ready;
+  const { publicKey } = await api('push/key', {});
+  let sub = await reg.pushManager.getSubscription();
+  if (sub) { const cur = sub.options && sub.options.applicationServerKey; if (cur && btoa(String.fromCharCode(...new Uint8Array(cur))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') !== publicKey) { await sub.unsubscribe(); sub = null; } }
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64u(publicKey) });
+  await api('push/subscribe', { subscription: sub.toJSON(), ua: navigator.userAgent.slice(0, 120) });
+  ls.set(K.pushOn, true);
+}
+async function disablePush() {
+  ls.set(K.pushOn, false);
+  try { const reg = await navigator.serviceWorker.ready, sub = await reg.pushManager.getSubscription();
+    if (sub) { await api('push/unsubscribe', { endpoint: sub.endpoint }).catch(() => {}); await sub.unsubscribe(); } } catch (_) {}
+}
+$('#pushChk').addEventListener('change', async e => {
+  const on = e.target.checked; e.target.disabled = true;
+  try { if (on) { await enablePush(); toast('Alerts on. Bots that @ you will reach your phone.'); } else { await disablePush(); toast('Alerts off'); } }
+  catch (err) { ls.set(K.pushOn, false); toast(esc(err.message || 'Could not turn on alerts')); if (err.kind === 'passcode') askPass(true); }
+  finally { renderPushToggle(); }
+});
+$('#mentionPill').addEventListener('click', () => { const m = unreadPings()[0] || sorted().filter(isPing).pop(); if (m) jumpTo(m.id); });
+// opened from a notification: #m=<id> in the URL, or a message from the service worker
+function jumpFromHash() {
+  const id = (/[#&]m=([^&]+)/.exec(location.hash) || [])[1]; if (!id) return;
+  const want = decodeURIComponent(id); let tries = 0;
+  const go = () => { if (jumpTo(want)) { history.replaceState(null, '', location.pathname + location.search); return; } if (++tries < 20) { if (tries === 3) poll(true); setTimeout(go, 700); } };
+  go();
+}
+window.addEventListener('hashchange', jumpFromHash);
+if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', e => { if (e.data && e.data.type === 'jump' && e.data.id) { poll(); setTimeout(() => jumpTo(e.data.id) || (location.hash = 'm=' + e.data.id), 400); } });
+
 /* ---------- long-press a bot's avatar to @mention it ---------- */
 function insertMention(name) {
   const t = $('#input'), v = t.value, a = t.selectionStart ?? v.length, b = t.selectionEnd ?? v.length;
@@ -563,4 +662,5 @@ autoGrow(); updateSend(); renderHeader(); renderAs(); render(true); renderReply(
 $('#offline').hidden = navigator.onLine;
 if (!pass) askPass(false); else { poll(); loadPeople(); flushOutbox(); }
 startPolling();
+jumpFromHash();
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js?v=' + VERSION).catch(() => {});
