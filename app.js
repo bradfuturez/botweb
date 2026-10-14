@@ -1,7 +1,7 @@
 /* BotWeb: one group chat for Brad and his bots. Talks to the botweb-relay (the relay holds the GitHub access;
    this public app only knows a passcode, typed once and kept on this phone). No chat content lives in this repo. */
 'use strict';
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const RELAY = (window.BOTWEB_RELAY || 'https://botweb-relay.vercel.app/api/');
 const TZ = 'America/New_York', POLL_MS = 4000;
 const K = { pass: 'bw.passcode', as: 'bw.postAs', draft: 'bw.draft', cache: 'bw.cache', people: 'bw.people', outbox: 'bw.outbox', reply: 'bw.reply', signed: 'bw.signed' };
@@ -14,6 +14,7 @@ const DEFAULT_PEOPLE = [
   { id: 'sound', name: 'Sound/Voice Crafter', kind: 'bot', color: '#3EC6E0', initial: 'V' },
   { id: 'muse', name: 'Brainy Muse', kind: 'paste', color: '#FFD84D', initial: 'M' },
   { id: 'chatgpt', name: 'ChatGPT', kind: 'paste', color: '#3DDC84', initial: 'C' },
+  { id: 'gemini', name: 'Gemini', kind: 'bot', color: '#4285F4', initial: 'G' },
 ];
 const ME = 'Brad';
 const $ = s => document.querySelector(s);
