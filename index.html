@@ -13,7 +13,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
-<link rel="stylesheet" href="styles.css?v=1.4.0">
+<link rel="stylesheet" href="styles.css?v=1.5.0">
 </head>
 <body>
 <div id="app">
@@ -75,6 +75,11 @@
     <div class="row-btns"><button type="button" class="ghost" id="addPerson">+ Add participant</button><button type="button" class="primary" id="savePeople">Save participants</button></div>
   </section>
   <section>
+    <h3>Data</h3>
+    <label class="check toggle"><input type="checkbox" id="saverChk" checked> Data saver</label>
+    <p class="hint">Chat shows small previews only. Full photos and videos load when you tap them. Opened files are kept on this phone (up to about 200 MB) so they aren't downloaded again.</p>
+  </section>
+  <section>
     <h3>Alerts</h3>
     <label class="check toggle"><input type="checkbox" id="pushChk"> Alert me when bots @ me</label>
     <p class="hint" id="pushHint"></p>
@@ -93,9 +98,9 @@
   </section>
 </div>
 
-<div id="viewer" class="viewer" hidden role="dialog" aria-label="Photo"><img id="viewerImg" alt=""><button type="button" class="viewer-x" aria-label="Close">✕</button></div>
+<div id="viewer" class="viewer" hidden role="dialog" aria-label="Photo"><img id="viewerImg" alt=""><video id="viewerVid" controls playsinline preload="none" hidden></video><button type="button" class="viewer-x" aria-label="Close">✕</button></div>
 
 <div id="toast" role="status" hidden></div>
-<script src="app.js?v=1.4.0"></script>
+<script src="app.js?v=1.5.0"></script>
 </body>
 </html>

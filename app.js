@@ -1,10 +1,11 @@
 /* BotWeb: one group chat for Brad and his bots. Talks to the botweb-relay (the relay holds the GitHub access;
    this public app only knows a passcode, typed once and kept on this phone). No chat content lives in this repo. */
 'use strict';
-const VERSION = '1.4.0';
+const VERSION = '1.5.0';
 const RELAY = (window.BOTWEB_RELAY || 'https://botweb-relay.vercel.app/api/');
 const TZ = 'America/New_York', POLL_MS = 4000;
-const K = { pass: 'bw.passcode', as: 'bw.postAs', draft: 'bw.draft', cache: 'bw.cache', people: 'bw.people', outbox: 'bw.outbox', reply: 'bw.reply', signed: 'bw.signed', seenAt: 'bw.mentionSeen', pushOn: 'bw.pushOn' };
+const K = { pass: 'bw.passcode', as: 'bw.postAs', draft: 'bw.draft', cache: 'bw.cache', people: 'bw.people', outbox: 'bw.outbox', reply: 'bw.reply', signed: 'bw.signed', seenAt: 'bw.mentionSeen', pushOn: 'bw.pushOn', saver: 'bw.dataSaver' };
+const THUMB_PX = 480;
 const MAX_VIDEO = 400 * 1024 * 1024, MAX_IMAGE_IN = 60 * 1024 * 1024, MAX_IMAGE_PX = 2048, MAX_FILES = 10;
 const DEFAULT_PEOPLE = [
   { id: 'brad', name: 'Brad', kind: 'human', color: '#4F9DFF', initial: 'B' },
@@ -121,12 +122,24 @@ for (const [u, v] of Object.entries(signedCache)) if (!v || v.until - Date.now()
 const kindOf = a => /^image\//.test(a.mime || '') || (!a.mime && /\.(jpe?g|png|gif|webp|heic|avif)$/i.test(a.name || '')) ? 'image'
   : /^video\//.test(a.mime || '') || (!a.mime && /\.(mp4|mov|m4v|webm)$/i.test(a.name || '')) ? 'video' : 'file';
 function srcFor(url) { if (!PRIV.test(url)) return url; const h = signedCache[url]; return h && h.until - Date.now() > 10 * 60e3 ? h.url : ''; }
+const fmtMB = n => n >= 1048576 ? (n / 1048576).toFixed(n >= 10485760 ? 0 : 1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
+const fmtDur = d => { d = Math.round(d); return Math.floor(d / 60) + ':' + String(d % 60).padStart(2, '0'); };
+// Data saver (on by default): the chat list never loads full photos/videos; old media without a thumbnail shows a "Tap to load" card.
+const dataSaver = () => ls.get(K.saver, true) !== false;
+// The service worker keeps thumbnails and opened media in a cache keyed by blob pathname (signed query ignored).
+const mediaKey = url => { try { const u = new URL(url); return 'https://bw-media.invalid/' + u.hostname + u.pathname; } catch (_) { return ''; } };
+async function isCached(url) { try { return !!navigator.serviceWorker.controller && !!(await (await caches.open('bw-media-v1')).match(mediaKey(url))); } catch (_) { return false; } }
 function attHtml(a) {
   if (!a.url) return `<span class="att">📎 ${esc(a.name)}</span>`;
-  const k = kindOf(a), src = srcFor(a.url), ar = a.w && a.h ? ` style="aspect-ratio:${+a.w}/${+a.h}"` : '';
-  const s = src ? ` src="${esc(src)}"` : '';
-  if (k === 'image') return `<button type="button" class="media" data-view="${esc(a.url)}" aria-label="Open photo ${esc(a.name)}"><img data-blob="${esc(a.url)}"${s}${ar} alt="${esc(a.name)}" loading="lazy" decoding="async"></button>`;
-  if (k === 'video') return `<div class="media"><video data-blob="${esc(a.url)}"${s}${ar} controls playsinline preload="metadata"></video></div>`;
+  const k = kindOf(a), ar = a.w && a.h ? ` style="aspect-ratio:${+a.w}/${+a.h}"` : '';
+  if (k === 'image' || k === 'video') {
+    const play = k === 'video' ? `<span class="play" aria-hidden="true">▶</span>${a.dur ? `<span class="vdur">${fmtDur(a.dur)}</span>` : ''}` : '';
+    const open = `type="button" class="media" data-view="${esc(a.url)}" data-kind="${k}" aria-label="Open ${k === 'video' ? 'video' : 'photo'} ${esc(a.name)}"`;
+    if (a.thumb) return `<button ${open}><img data-blob="${esc(a.thumb)}"${ar} alt="${esc(a.name)}" loading="lazy" decoding="async">${play}</button>`;
+    if (k === 'image' && !dataSaver()) return `<button ${open}><img data-blob="${esc(a.url)}"${ar} alt="${esc(a.name)}" loading="lazy" decoding="async"></button>`;
+    const info = [k === 'video' ? 'Video' : 'Photo', a.dur ? fmtDur(a.dur) : '', a.size ? fmtMB(a.size) : ''].filter(Boolean).join(' · ');
+    return `<button ${open.replace('class="media"', 'class="media ph"')}><span class="ph-in"><span class="ph-ic">${k === 'video' ? '▶' : '🖼'}</span><b>Tap to load</b><small>${esc(info)}</small></span></button>`;
+  }
   if (PRIV.test(a.url)) return `<button type="button" class="att" data-open="${esc(a.url)}">📎 ${esc(a.name)}</button>`;
   return `<a class="att" href="${esc(a.url)}" target="_blank" rel="noopener noreferrer">📎 ${esc(a.name)}</a>`;
 }
@@ -135,25 +148,33 @@ async function signUrls(urls) {
   urls = [...new Set(urls)].filter(u => PRIV.test(u) && !srcFor(u));
   if (!urls.length || !pass) return;
   const d = await api('files/sign', { urls });
-  for (const [u, s] of Object.entries(d.urls || {})) signedCache[u] = { url: s, until: d.validUntil || Date.now() + 6 * 3600e3 };
+  for (const [u, s] of Object.entries(d.urls || {})) signedCache[u] = { url: s, until: d.validUntil || Date.now() + 6 * 3600e3 }; // relay links last 7 days and are reused
   ls.set(K.signed, Object.fromEntries(Object.entries(signedCache).slice(-300)));
 }
 let hydrateAgain = false;
 async function hydrateMedia() {
   if (signing) { hydrateAgain = true; return; }
   const els = [...document.querySelectorAll('#list [data-blob]:not([src])')]; if (!els.length) return;
-  signing = signUrls(els.map(e => e.dataset.blob)).catch(() => {});
+  const need = [];
+  for (const e of els) { const u = e.dataset.blob; if (!srcFor(u) && PRIV.test(u) && await isCached(u)) e.src = u; else need.push(e); } // cached: no signing, no download
+  signing = signUrls(need.map(e => e.dataset.blob)).catch(() => {});
   await signing; signing = null;
-  for (const e of els) { const s = srcFor(e.dataset.blob); if (s) e.src = s; }
+  for (const e of need) { const s = srcFor(e.dataset.blob); if (s) e.src = s; }
   if (hydrateAgain) { hydrateAgain = false; hydrateMedia(); }
 }
-async function openViewer(url) {
-  await signUrls([url]).catch(() => {});
-  const s = srcFor(url); if (!s) { toast("Couldn't open that photo"); return; }
-  $('#viewerImg').src = s; $('#viewer').hidden = false;
+// Lightbox: the full photo/video loads only here, after a tap. Videos use preload="none" and never autoplay.
+async function openViewer(url, kind) {
+  let s = (await isCached(url)) ? url : '';
+  if (!s) { await signUrls([url]).catch(() => {}); s = srcFor(url); }
+  if (!s) { toast(kind === 'video' ? "Couldn't open that video" : "Couldn't open that photo"); return; }
+  const img = $('#viewerImg'), vid = $('#viewerVid');
+  if (kind === 'video') { img.hidden = true; vid.hidden = false; vid.preload = 'none'; vid.src = s; }
+  else { vid.hidden = true; img.hidden = false; img.src = s; }
+  $('#viewer').hidden = false;
 }
-$('#viewer').addEventListener('click', () => { $('#viewer').hidden = true; $('#viewerImg').removeAttribute('src'); });
-document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#viewer').hidden) $('#viewer').click(); });
+function closeViewer() { const v = $('#viewerVid'); v.pause(); v.removeAttribute('src'); v.load(); $('#viewerImg').removeAttribute('src'); $('#viewer').hidden = true; }
+$('#viewer').addEventListener('click', e => { if (e.target.closest('video')) return; closeViewer(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#viewer').hidden) closeViewer(); });
 
 /* ---------- rendering ---------- */
 let rendered = '';
@@ -163,7 +184,7 @@ function render(force) {
   const list = sorted();
   const pend = outbox.map(o => ({ id: o.tmp, from: o.from, text: o.text, ts: o.at, replyTo: o.replyTo, attachments: o.attachments, _pending: true, _failed: o.failed }));
   const all = list.concat(pend);
-  const sig = all.map(m => m.id + (m._failed ? 'f' : '')).join(',') + '|' + people.map(p => p.name + p.color + p.initial).join(',');
+  const sig = all.map(m => m.id + (m._failed ? 'f' : '') + ((m.attachments || []).filter(a => a.thumb).length || '')).join(',') + '|' + people.map(p => p.name + p.color + p.initial).join(',');
   if (!force && sig === rendered) return;
   const wasBottom = nearBottom() || !rendered, prevCount = rendered ? rendered.split(',').length : 0;
   rendered = sig;
@@ -232,21 +253,28 @@ function setReply(id) { replyTo = id; ls.set(K.reply, id); renderReply(); if (id
 let booted = false;
 function merge(list) {
   let changed = false, fresh = false;
-  for (const m of list || []) if (m && m.id && !msgs.has(m.id)) { msgs.set(m.id, m); changed = true; if (booted && isPing(m) && Date.now() - new Date(m.ts) < 10 * 60e3) fresh = true; }
+  for (const m of list || []) {
+    if (!m || !m.id) continue;
+    const old = msgs.get(m.id);
+    if (old) { if (JSON.stringify(old.attachments || null) !== JSON.stringify(m.attachments || null)) { msgs.set(m.id, m); changed = true; } continue; } // e.g. thumbnails added later
+    msgs.set(m.id, m); changed = true; if (booted && isPing(m) && Date.now() - new Date(m.ts) < 10 * 60e3) fresh = true;
+  }
   booted = true;
   if (fresh && !pushActive()) pingAlert();
   if (changed) saveCache();
   return changed;
 }
+let fullOnce = false; // the first poll after opening re-reads recent history (picks up thumbnails added later)
 async function poll(manual) {
   if (!pass || polling) return;
   polling = true;
   if (manual) $('#refreshBtn').classList.add('spin');
   try {
     const last = sorted().pop();
-    const body = last && !manual ? { since: new Date(new Date(last.ts).getTime() - 2000).toISOString() } : {};
+    const body = last && !manual && fullOnce ? { since: new Date(new Date(last.ts).getTime() - 2000).toISOString() } : {};
     const d = await api('messages/list', body);
     lastOk = Date.now(); setConn(true);
+    fullOnce = true;
     if (merge(d.messages)) render();
     if (outbox.length) flushOutbox();
     if (manual) toast('Up to date');
@@ -400,7 +428,7 @@ $('#scrim').addEventListener('click', closeSheet);
 /* ---------- message list interactions ---------- */
 $('#list').addEventListener('click', e => {
   const r = e.target.closest('[data-reply]'); if (r) { setReply(r.dataset.reply); return; }
-  const v = e.target.closest('[data-view]'); if (v) { openViewer(v.dataset.view); return; }
+  const v = e.target.closest('[data-view]'); if (v) { openViewer(v.dataset.view, v.dataset.kind); return; }
   const fo = e.target.closest('[data-open]'); if (fo) { const w = window.open('', '_blank'); signUrls([fo.dataset.open]).then(() => { const s = srcFor(fo.dataset.open); if (s && w) w.location = s; else if (w) w.close(); }); return; }
   const j = e.target.closest('[data-jump]');
   if (j) { const el = document.querySelector(`.msg[data-id="${CSS.escape(j.dataset.jump)}"]`); if (el) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); } else toast('That message is older than what is loaded'); return; }
@@ -412,7 +440,6 @@ $('#replyX').addEventListener('click', () => setReply(null));
 $('#refreshBtn').addEventListener('click', () => { if (!pass) { askPass(false); return; } poll(true); loadPeople(); });
 
 /* ---------- attachments: pick, preview, shrink photos, upload straight to the private store with progress ---------- */
-const fmtMB = n => n >= 1048576 ? (n / 1048576).toFixed(n >= 10485760 ? 0 : 1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
 function addFiles(list) {
   for (const f of list) {
     const kind = /^video\//.test(f.type) || /\.(mov|mp4|m4v|webm)$/i.test(f.name) ? 'video' : /^image\//.test(f.type) || /\.(heic|heif)$/i.test(f.name) ? 'image' : null;
@@ -454,6 +481,24 @@ async function prepImage(file) {
   const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.86));
   if (!blob || (scale === 1 && blob.size >= file.size && /^image\/(jpeg|png|webp)$/.test(file.type))) return { blob: file, name: file.name, type: file.type, w, h };
   return { blob, name: base + '.jpg', type: 'image/jpeg', w: cw, h: chh };
+}
+// Thumbnails: ~480 px WebP (JPEG fallback), uploaded next to the original; the chat list shows only these.
+async function canvasThumb(src, w, h) {
+  if (!w || !h) return null;
+  const sc = Math.min(1, THUMB_PX / Math.max(w, h)), c = document.createElement('canvas'); c.width = Math.max(1, Math.round(w * sc)); c.height = Math.max(1, Math.round(h * sc));
+  const g = c.getContext('2d'); g.fillStyle = '#000'; g.fillRect(0, 0, c.width, c.height); g.drawImage(src, 0, 0, c.width, c.height);
+  let b = await new Promise(r => c.toBlob(r, 'image/webp', 0.72));
+  if (!b || b.type !== 'image/webp') b = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.72));
+  return b && b.size ? b : null;
+}
+async function imageThumb(blob) { try { const im = await loadImage(blob); try { return await canvasThumb(im.img, im.w, im.h); } finally { im.done(); } } catch (_) { return null; } }
+function videoPoster(url) { // poster frame ~1 s in (or a third in for short clips)
+  return new Promise(res => { const v = document.createElement('video'); let done = false; const fin = b => { if (!done) { done = true; clearTimeout(t); v.removeAttribute('src'); v.load(); res(b); } };
+    const t = setTimeout(() => fin(null), 10000);
+    v.muted = true; v.playsInline = true; v.preload = 'auto';
+    v.onloadedmetadata = () => { v.currentTime = Math.min(1, (isFinite(v.duration) ? v.duration : 3) / 3); };
+    v.onseeked = () => canvasThumb(v, v.videoWidth, v.videoHeight).then(fin, () => fin(null));
+    v.onerror = () => fin(null); v.src = url; });
 }
 function videoInfo(url) {
   return new Promise(res => { const v = document.createElement('video'); const t = setTimeout(() => res({}), 4000);
@@ -535,7 +580,7 @@ async function uploadAll() {
   try {
     bar(0, 'Preparing…');
     for (const p of picked) {
-      if (p.kind === 'image') items.push({ ...(await prepImage(p.file)), kind: 'image' });
+      if (p.kind === 'image') { const it = { ...(await prepImage(p.file)), kind: 'image' }; if (!/gif|svg/.test(it.type)) it.thumb = await imageThumb(it.blob); items.push(it); }
       else {
         const it = { blob: p.file, name: p.file.name || 'video.mp4', type: p.file.type || (/\.mov$/i.test(p.file.name) ? 'video/quicktime' : 'video/mp4'), kind: 'video', orig: p.file.size };
         if (!keepOriginal) {
@@ -544,6 +589,7 @@ async function uploadAll() {
           if (sh) Object.assign(it, sh, { name: it.name.replace(/\.[^.]+$/, '') + '.mp4', type: 'video/mp4' });
         }
         if (!it.w) Object.assign(it, await videoInfo(p.url));
+        it.thumb = await videoPoster(p.url);
         items.push(it);
       }
     }
@@ -555,7 +601,9 @@ async function uploadAll() {
       bar(doneBytes / total, `${label}… ${Math.round(doneBytes / total * 100)}%`);
       const r = await blobUpload(it, n => { const f = (doneBytes + n) / total; bar(f, `${label}… ${Math.round(f * 100)}% · ${fmtMB(doneBytes + n)} of ${fmtMB(total)}${sizeNote}`); });
       doneBytes += it.blob.size;
-      out.push({ name: it.name, url: r.url, mime: it.type, size: it.blob.size, w: it.w, h: it.h, dur: it.dur });
+      let thumb; // best effort: a failed thumbnail upload never blocks the message
+      if (it.thumb) try { const tb = it.thumb; thumb = (await blobUpload({ blob: tb, type: tb.type, name: it.name.replace(/\.[^.]+$/, '') + '.thumb.' + (tb.type === 'image/webp' ? 'webp' : 'jpg') }, () => {})).url; } catch (_) {}
+      out.push({ name: it.name, url: r.url, mime: it.type, size: it.blob.size, w: it.w, h: it.h, dur: it.dur, thumb });
     }
     bar(1, 'Sent');
     if (shrunk.length) toast(`Video shrunk from ${fmtMB(was)} to ${fmtMB(now)}`, 4000);
@@ -597,6 +645,8 @@ async function disablePush() {
   try { const reg = await navigator.serviceWorker.ready, sub = await reg.pushManager.getSubscription();
     if (sub) { await api('push/unsubscribe', { endpoint: sub.endpoint }).catch(() => {}); await sub.unsubscribe(); } } catch (_) {}
 }
+$('#saverChk').checked = dataSaver();
+$('#saverChk').addEventListener('change', e => { ls.set(K.saver, e.target.checked); render(true); });
 $('#pushChk').addEventListener('change', async e => {
   const on = e.target.checked; e.target.disabled = true;
   try { if (on) { await enablePush(); toast('Alerts on. Bots that @ you will reach your phone.'); } else { await disablePush(); toast('Alerts off'); } }
