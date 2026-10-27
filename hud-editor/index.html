@@ -72,7 +72,7 @@ body.preview #panel{display:none}
 <input type="file" id="jfile" accept="application/json,.json" hidden>
 <script>
 "use strict";
-const KEY='caw-hud-v1';
+const KEY='caw-hud-v1';const GRID='linear-gradient(rgba(45,255,138,.06) 1px,transparent 1px) 0 0/40px 40px,linear-gradient(90deg,rgba(45,255,138,.06) 1px,transparent 1px) 0 0/40px 40px,radial-gradient(ellipse at 50% 40%,#0c2a22 0%,#06130f 55%,#020806 100%)';
 const THEMES={
  'Bio Green':{fill:'#06261acc',border:'#2dff8a',glow:'#2dff8a',text:'#d9ffe9'},
  'Xeno Violet':{fill:'#1d0830cc',border:'#b46bff',glow:'#9d4dff',text:'#f1e2ff'},
@@ -82,7 +82,7 @@ const THEMES={
 const FONTS=['system-ui','Orbitron, sans-serif','Impact, sans-serif','Georgia, serif','Courier New, monospace','Trebuchet MS, sans-serif','Verdana, sans-serif'];
 let uid=1;
 function mk(type,o){const t=THEMES['Bio Green'];return Object.assign({id:'e'+(uid++),type,label:'',value:'',icon:'',img:'',bgImg:'',shape:'rounded',fill:t.fill,border:t.border,glow:t.glow,text:t.text,fontSize:12,font:'system-ui',opacity:1,borderW:2,glowSize:10,hidden:false,x:40,y:40,w:8,h:8,body:''},o)}
-function defaults(){uid=1;return {bg:'bg.jpg',bgDim:0,theme:'Bio Green',els:[
+function defaults(){uid=1;return {v:2,bg:'',bgDim:0,theme:'Bio Green',els:[
  mk('button',{label:'',value:'18',icon:'🧑‍🚀',shape:'circle',x:.6,y:.8,w:6,h:10.7,fontSize:10}),
  mk('resource',{label:'CreatAWar',value:'',icon:'🛡',shape:'rounded',x:7,y:1.2,w:12,h:4.5,fontSize:13}),
  mk('resource',{label:'VIP',value:'2097',icon:'',shape:'pill',x:7,y:6.2,w:7,h:3.8,fontSize:11}),
@@ -115,14 +115,14 @@ function defaults(){uid=1;return {bg:'bg.jpg',bgDim:0,theme:'Bio Green',els:[
 ]}}
 let S,sel=null;
 try{S=JSON.parse(localStorage.getItem(KEY))}catch(e){}
-if(!S||!S.els){S=defaults()}else{uid=Math.max(0,...S.els.map(e=>+e.id.slice(1)||0))+1}
+if(!S||!S.els){S=defaults()}else{if(!S.v){S.v=2;if(S.bg==='bg.jpg')S.bg=''}uid=Math.max(0,...S.els.map(e=>+e.id.slice(1)||0))+1}
 const stage=document.getElementById('stage'),panel=document.getElementById('panel');
 let saveT;function save(){clearTimeout(saveT);saveT=setTimeout(()=>{try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){toast('Storage full – use smaller images')}},250)}
 function toast(m){const t=document.getElementById('toast');t.textContent=m;t.style.opacity=1;setTimeout(()=>t.style.opacity=0,1600)}
 function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 function cq(px){return `calc(${px}*100cqw/1024)`}
 function render(){
- stage.style.backgroundImage=(S.bgDim?`linear-gradient(rgba(0,0,0,${S.bgDim}),rgba(0,0,0,${S.bgDim})),`:'')+(S.bg?`url("${S.bg}")`:'none');
+ const dim=S.bgDim?`linear-gradient(rgba(0,0,0,${S.bgDim}),rgba(0,0,0,${S.bgDim})),`:'';stage.style.background=S.bg?dim+`url("${S.bg}") center/cover no-repeat`:dim+GRID;
  stage.innerHTML='';S.els.forEach(e=>stage.appendChild(build(e)))}
 function build(e){
  const d=document.createElement('div');d.className=`el ${e.type} sh-${e.shape}${e.hidden?' hiddenEl':''}${sel===e.id?' sel':''}`;d.dataset.id=e.id;
@@ -220,7 +220,7 @@ document.querySelectorAll('[data-add]').forEach(b=>b.onclick=()=>{const ty=b.dat
  const e=mk(ty,Object.assign({},t,ty==='button'?{label:'New',icon:'⭐',shape:'circle',x:46,y:42,w:5,h:9}:ty==='resource'?{label:'Resource',value:'0',icon:'💎',shape:'pill',x:44,y:10,w:10,h:5.5}:{label:'New Window',body:'Window text…',x:35,y:25,w:30,h:35,shape:'rounded'}));
  S.els.push(e);select(e.id);save()});
 document.getElementById('bgBtn').onclick=()=>{sel=null;render();
- panel.innerHTML=`<button id="closeP">✕</button><h3>Game background</h3><div class="row"><button id="bgUp">🖼 Upload background</button><button id="bgDef">Default mockup</button><button id="bgNone">None</button></div><label>Darken<input type="range" id="bgDim" min="0" max="0.9" step="0.05" value="${S.bgDim||0}"></label>`;
+ panel.innerHTML=`<button id="closeP">✕</button><h3>Game background</h3><div class="row"><button id="bgUp">🖼 Upload background</button><button id="bgNone">Blank grid (default)</button><button id="bgDef">Mockup</button></div><label>Darken<input type="range" id="bgDim" min="0" max="0.9" step="0.05" value="${S.bgDim||0}"></label>`;
  panel.classList.add('open');
  panel.querySelector('#bgUp').onclick=()=>pickImage(1600,u=>{S.bg=u;render();save()});
  panel.querySelector('#bgDef').onclick=()=>{S.bg='bg.jpg';render();save()};
@@ -232,7 +232,7 @@ document.getElementById('layers').onclick=()=>{sel=null;render();
 document.getElementById('exp').onclick=()=>{const b=new Blob([JSON.stringify({app:'CreateAWar HUD',version:1,refWidth:1024,refHeight:576,units:'percent of screen',...S},null,1)],{type:'application/json'});
  const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='createawar-hud-layout.json';a.click();toast('Exported layout JSON')};
 const jIn=document.getElementById('jfile');document.getElementById('imp').onclick=()=>{jIn.value='';jIn.click()};
-jIn.onchange=()=>{const f=jIn.files[0];if(!f)return;f.text().then(t=>{try{const o=JSON.parse(t);if(!Array.isArray(o.els))throw 0;S={bg:o.bg??'bg.jpg',bgDim:o.bgDim||0,theme:o.theme||'Bio Green',els:o.els};uid=Math.max(0,...S.els.map(e=>+String(e.id).slice(1)||0))+1;sel=null;render();save();toast('Layout imported')}catch(e){alert('Not a valid HUD layout file')}})};
+jIn.onchange=()=>{const f=jIn.files[0];if(!f)return;f.text().then(t=>{try{const o=JSON.parse(t);if(!Array.isArray(o.els))throw 0;S={v:2,bg:o.bg??'',bgDim:o.bgDim||0,theme:o.theme||'Bio Green',els:o.els};uid=Math.max(0,...S.els.map(e=>+String(e.id).slice(1)||0))+1;sel=null;render();save();toast('Layout imported')}catch(e){alert('Not a valid HUD layout file')}})};
 document.getElementById('reset').onclick=()=>{if(confirm('Reset HUD to default layout? Your changes will be lost.')){S=defaults();sel=null;panel.classList.remove('open');render();save();toast('Reset')}};
 if(new URLSearchParams(location.search).has('preview'))document.getElementById('modeBtn').click();
 render();
